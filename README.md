@@ -1,4 +1,5 @@
 # MyOne Dynabead Research
+%Forked Ben's Data to try to add the ability to customize the cropping window%
 This stared as a quick and dirty script I threw together to try and replace an $800/year Mathematica subscription. It's current incarnation is as a standalone GUI executable (though it can still be run from the command line) for tracking analysis, though at some point I'll add bulk cropping to it's functionality. Right now the script processes all the `.avi` files in whichever folder you provide. It uses [OpenCV]() to track the center of any centroid it can detect, and has the functionality to save that data as a raw text file with rotation angle around the computed center of rotation, to graph the bead's position over time and the calculated center, or to export the original video with an overlay of the center of the bead to observe/debug any mistracks. It processes as many videos in parallel as the CPU permits, so is generally quite speedy. My M1 Pro can processes 15 videos (each ~1:30 long and ~30 MB in size) each second.
 
 # Usage
