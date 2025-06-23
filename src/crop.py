@@ -71,7 +71,7 @@ def detect_beads(frame):
     return centers
 
 
-def export_selected_beads(input, output, video_path, selections):
+def export_selected_beads(input, output, video_path, selections, crop_size):
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"{video_path} does not exist.")
 
@@ -86,6 +86,7 @@ def export_selected_beads(input, output, video_path, selections):
     os.makedirs(output, exist_ok=True)
 
     writers = []
+    half_crop_size = crop_size // 2
     for i, selected in enumerate(selections):
         i += 1
         if selected:
@@ -94,7 +95,7 @@ def export_selected_beads(input, output, video_path, selections):
             os.makedirs(out_dir, exist_ok=True)
             out_path = os.path.join(out_dir, os.path.basename(video_path))
             writers.append(
-                (cv2.VideoWriter(out_path, fourcc, fps, (100, 100)), (cx, cy))
+                (cv2.VideoWriter(out_path, fourcc, fps, (crop_size, crop_size)), (cx, cy))
             )
 
     for i in range(total_frames):
@@ -102,11 +103,23 @@ def export_selected_beads(input, output, video_path, selections):
         if not ret:
             break
         for writer, (cx, cy) in writers:
-            y1 = max(0, cy - 50)
-            y2 = min(cy + 50, frame.shape[0])
-            x1 = max(0, cx - 50)
-            x2 = min(cx + 50, frame.shape[1])
-            writer.write(frame[y1:y2, x1:x2])
+            y1 = max(0, cy - half_crop_size)
+            y2 = min(cy + half_crop_size, frame.shape[0])
+            x1 = max(0, cx - half_crop_size)
+            x2 = min(cx + half_crop_size, frame.shape[1])
+            
+            # Extract the crop region
+            crop_region = frame[y1:y2, x1:x2]
+            
+            # If the crop region is smaller than expected (due to frame boundaries),
+            # pad it to maintain the expected size
+            if crop_region.shape[0] != crop_size or crop_region.shape[1] != crop_size:
+                padded_crop = np.zeros((crop_size, crop_size, 3), dtype=np.uint8)
+                h, w = crop_region.shape[:2]
+                padded_crop[:h, :w] = crop_region
+                crop_region = padded_crop
+            
+            writer.write(crop_region)
 
     cap.release()
     for writer, _ in writers:
@@ -123,9 +136,26 @@ class VideoFrameExplorer:
         self.output = output
         self.current_index = 0
         self.detected_centers = []
+        self.crop_size = 100  # Default crop size (can be changed)
 
         self.canvas = tk.Canvas(self.root, width=960, height=540)
         self.canvas.pack()
+
+        # Frame for crop size controls
+        self.crop_size_frame = ttk.Frame(self.root)
+        self.crop_size_frame.pack(side=tk.BOTTOM, pady=(5, 0))
+        
+        ttk.Label(self.crop_size_frame, text="Crop Size:").pack(side=tk.LEFT)
+        self.crop_size_var = tk.StringVar(value=str(self.crop_size))
+        self.crop_size_entry = ttk.Entry(self.crop_size_frame, textvariable=self.crop_size_var, width=6)
+        self.crop_size_entry.pack(side=tk.LEFT, padx=(5, 5))
+        self.crop_size_entry.bind('<Return>', self.update_crop_size)
+        self.crop_size_entry.bind('<FocusOut>', self.update_crop_size)
+        
+        self.update_size_button = ttk.Button(
+            self.crop_size_frame, text="Update Size", command=self.update_crop_size
+        )
+        self.update_size_button.pack(side=tk.LEFT)
 
         # Frame for export buttons, placed correctly below the navigation frame
         self.export_button_frame = ttk.Frame(self.root)
@@ -174,7 +204,6 @@ class VideoFrameExplorer:
         )
         self.custom_rect_button.pack(side=tk.LEFT, padx=(0, 20))
 
-
         self.canvas.bind("<Button-1>", self.on_canvas_click)
         self.canvas.bind("<Button-2>", self.on_canvas_right_click)
         # Different systems have different default bindings, so checking both here
@@ -211,13 +240,23 @@ class VideoFrameExplorer:
 
         self.root.resizable(False, False)
 
-
         try:
             self.root.eval(f"tk::PlaceWindow . center")
         except:
             pass
 
         self.root.deiconify()
+
+    def update_crop_size(self, event=None):
+        """Update the crop size and redraw rectangles"""
+        try:
+            new_size = int(self.crop_size_var.get())
+            if new_size > 0:
+                self.crop_size = new_size
+                self.redraw_rectangles()
+        except ValueError:
+            # Reset to current value if invalid input
+            self.crop_size_var.set(str(self.crop_size))
 
     def update_button_states(self):
         # Disable "First" and "Prev" buttons if on the first video
@@ -251,11 +290,12 @@ class VideoFrameExplorer:
             pass
 
     def detect_and_draw_centers(self, frame):
-        # if self.current_index == 0 and not self.detected_centers:
         centers = detect_beads(cv2.cvtColor(np.array(frame), cv2.COLOR_RGB2BGR))
         self.detected_centers = self.detected_centers + [(center, False) for center in centers]
 
     def redraw_rectangles(self):
+        # Clear existing rectangles
+        self.canvas.delete("rect")
         for center, clicked in self.detected_centers:
             self.draw_rectangle(center, clicked)
 
@@ -270,14 +310,13 @@ class VideoFrameExplorer:
         frame = get_first_frame(self.video_paths[self.current_index])
         if frame is not None:
             self.detect_and_draw_centers(frame)
-            # self.update_canvas(frame)
             self.update_canvas(frame)
 
     def draw_rectangle(self, center, clicked):
         scale = self.get_scale()
 
-        # Scale the rectangle size (100x100) according to the scaling factor
-        half_side_length_scaled = 50 * scale
+        # Scale the rectangle size according to the current crop_size and scaling factor
+        half_side_length_scaled = (self.crop_size // 2) * scale
 
         x, y = center
         # Apply scaled half_side_length for rectangle coordinates
@@ -285,9 +324,10 @@ class VideoFrameExplorer:
         x2, y2 = x + half_side_length_scaled, y + half_side_length_scaled
         outline_color = "light green" if clicked else "red"
         self.canvas.create_rectangle(x1, y1, x2, y2, outline=outline_color, tags="rect")
-        # Create text label with x and y coordinates
+        # Create text label with x and y coordinates and crop size
         self.canvas.create_text(
-            (x1-(x2-x1)/1.5), y1-15, text=f"({int(x / scale)}, {int(y / scale)})", anchor=tk.NW, tags="rect"
+            (x1-(x2-x1)/1.5), y1-15, text=f"({int(x / scale)}, {int(y / scale)}) [{self.crop_size}x{self.crop_size}]", 
+            anchor=tk.NW, tags="rect"
         )
 
     def get_scale(self):
@@ -304,7 +344,7 @@ class VideoFrameExplorer:
         orig_width, orig_height = get_frame_size(self.video_paths[self.current_index])
         disp_width = 960
         scale = disp_width / orig_width if orig_width else 1
-        half_side_length_scaled = scale * 50
+        half_side_length_scaled = scale * (self.crop_size // 2)
         for i, (center, clicked) in enumerate(self.detected_centers):
             x1, y1 = (
                 center[0] - half_side_length_scaled,
@@ -325,7 +365,7 @@ class VideoFrameExplorer:
         orig_width, orig_height = get_frame_size(self.video_paths[self.current_index])
         disp_width = 960
         scale = disp_width / orig_width if orig_width else 1
-        half_side_length_scaled = scale * 50
+        half_side_length_scaled = scale * (self.crop_size // 2)
         for i, (center, clicked) in enumerate(self.detected_centers):
             x1, y1 = (
                 center[0] - half_side_length_scaled,
@@ -381,6 +421,7 @@ class VideoFrameExplorer:
                         self.output,
                         video_file,
                         selected_centers,
+                        self.crop_size,  # Pass the current crop size
                     ): video_file
                     for video_file in self.video_paths[0 : self.current_index + 1]
                 }
@@ -419,7 +460,8 @@ class VideoFrameExplorer:
             export_selected_beads(self.input,
             self.output,
             self.video_paths[self.current_index],
-            selected_centers)
+            selected_centers,
+            self.crop_size)  # Pass the current crop size
         else:
             print("No centers selected for this video.")
 
